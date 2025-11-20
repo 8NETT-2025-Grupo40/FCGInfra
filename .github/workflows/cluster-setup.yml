@@ -1,0 +1,220 @@
+name: Setup EKS Cluster & Add-ons
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_cluster:
+        description: 'Skip cluster creation (cluster already exists)'
+        type: boolean
+        default: false
+      skip_addons:
+        description: 'Skip add-ons installation (already installed)'
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: fcg
+  AWS_ACCOUNT_ID: 478511033947
+
+jobs:
+  setup-cluster:
+    name: Create EKS Cluster
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_cluster }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Install eksctl
+        run: |
+          curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz"
+          tar -xzf eksctl_Linux_amd64.tar.gz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          eksctl version
+      
+      - name: Create EKS Cluster
+        run: |
+          eksctl create cluster -f eks/cluster-config.yaml
+          echo "✅ Cluster created successfully"
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          kubectl get nodes
+  
+  setup-namespaces:
+    name: Create Namespaces
+    runs-on: ubuntu-latest
+    needs: [setup-cluster]
+    if: ${{ !cancelled() && (needs.setup-cluster.result == 'success' || needs.setup-cluster.result == 'skipped') }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+      
+      - name: Create Namespaces
+        run: |
+          kubectl create namespace fcg --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -
+          echo "✅ Namespaces created"
+  
+  setup-irsa-alb:
+    name: Setup IRSA for AWS Load Balancer Controller
+    runs-on: ubuntu-latest
+    needs: [setup-namespaces]
+    if: ${{ !cancelled() && !inputs.skip_addons }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Install eksctl
+        run: |
+          curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz"
+          tar -xzf eksctl_Linux_amd64.tar.gz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+      
+      - name: Create IAM Policy for ALB Controller (if not exists)
+        run: |
+          # Check if policy exists
+          if aws iam get-policy --policy-arn arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:policy/AWSLoadBalancerControllerIAMPolicy 2>/dev/null; then
+            echo "✅ Policy already exists"
+          else
+            echo "📝 Creating IAM policy..."
+            aws iam create-policy \
+              --policy-name AWSLoadBalancerControllerIAMPolicy \
+              --policy-document file://iam/alb-controller-policy.json || true
+          fi
+      
+      - name: Create IAM Policy for External Secrets (if not exists)
+        run: |
+          # Check if policy exists
+          if aws iam get-policy --policy-arn arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:policy/FCGExternalSecretsPolicy 2>/dev/null; then
+            echo "✅ Policy already exists"
+          else
+            echo "📝 Creating External Secrets IAM policy..."
+            aws iam create-policy \
+              --policy-name FCGExternalSecretsPolicy \
+              --policy-document file://iam/external-secrets-policy.json || true
+          fi
+      
+      - name: Create IRSA for ALB Controller
+        run: |
+          eksctl create iamserviceaccount \
+            --cluster=${{ env.CLUSTER_NAME }} \
+            --namespace=kube-system \
+            --name=aws-load-balancer-controller \
+            --attach-policy-arn=arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:policy/AWSLoadBalancerControllerIAMPolicy \
+            --approve \
+            --override-existing-serviceaccounts \
+            --region=${{ env.AWS_REGION }} || true
+          echo "✅ IRSA created for ALB Controller"
+  
+  install-addons:
+    name: Install Cluster Add-ons
+    runs-on: ubuntu-latest
+    needs: [setup-irsa-alb]
+    if: ${{ !cancelled() && !inputs.skip_addons }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+      
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+      
+      - name: Add Helm Repositories
+        run: |
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
+      
+      - name: Install AWS Load Balancer Controller
+        run: |
+          VPC_ID=$(aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'cluster.resourcesVpcConfig.vpcId' --output text)
+          
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName=${{ env.CLUSTER_NAME }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=${{ env.AWS_REGION }} \
+            --set vpcId=$VPC_ID \
+            --wait \
+            --timeout 5m
+          
+          echo "✅ AWS Load Balancer Controller installed"
+      
+      - name: Install External Secrets Operator
+        run: |
+          helm upgrade --install external-secrets external-secrets/external-secrets \
+            -n external-secrets \
+            --set installCRDs=true \
+            --wait \
+            --timeout 5m
+          
+          echo "✅ External Secrets Operator installed"
+      
+      - name: Verify Installations
+        run: |
+          echo "📊 Validating deployments are ready..."
+          
+          echo "Waiting for AWS Load Balancer Controller..."
+          kubectl wait --for=condition=available --timeout=300s \
+            deployment/aws-load-balancer-controller -n kube-system
+          
+          echo "Waiting for External Secrets Operator..."
+          kubectl wait --for=condition=available --timeout=300s \
+            deployment/external-secrets -n external-secrets
+          
+          echo ""
+          echo "📊 Deployment status:"
+          kubectl get deployment -n kube-system aws-load-balancer-controller
+          kubectl get deployment -n external-secrets external-secrets
+          
+          echo ""
+          echo "📊 Cluster nodes:"
+          kubectl get nodes
+          
+          echo ""
+          echo "✅ Cluster setup complete!"

@@ -1,0 +1,116 @@
+name: Destroy EKS Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: 'Type "DESTROY" to confirm cluster deletion'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: fcg
+
+jobs:
+  validate-input:
+    name: Validate Destruction Confirmation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Check Confirmation
+        run: |
+          if [ "${{ inputs.confirm_destroy }}" != "DESTROY" ]; then
+            echo "❌ Confirmation failed. You must type 'DESTROY' to proceed."
+            exit 1
+          fi
+          echo "✅ Confirmation validated"
+  
+  destroy-cluster:
+    name: Delete EKS Cluster and Resources
+    runs-on: ubuntu-latest
+    needs: [validate-input]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Install eksctl
+        run: |
+          curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz"
+          tar -xzf eksctl_Linux_amd64.tar.gz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          eksctl version
+      
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+      
+      - name: Remove Helm Releases
+        run: |
+          echo "🗑️  Removing Helm releases..."
+          helm list -A -o json | jq -r '.[] | "\(.name) -n \(.namespace)"' | while read release; do
+            echo "Deleting: $release"
+            helm uninstall $release --wait || true
+          done
+          echo "✅ Helm releases removed"
+        continue-on-error: true
+      
+      - name: Delete Load Balancers
+        run: |
+          echo "🗑️  Waiting for ALBs to be deleted..."
+          sleep 60
+          
+          # Force delete any remaining load balancers
+          aws elbv2 describe-load-balancers --region ${{ env.AWS_REGION }} --query "LoadBalancers[?contains(LoadBalancerName, 'k8s-fcg')].LoadBalancerArn" --output text | while read lb_arn; do
+            if [ ! -z "$lb_arn" ]; then
+              echo "Force deleting: $lb_arn"
+              aws elbv2 delete-load-balancer --load-balancer-arn $lb_arn --region ${{ env.AWS_REGION }} || true
+            fi
+          done
+          
+          echo "✅ Load balancers cleaned up"
+        continue-on-error: true
+      
+      - name: Delete Target Groups
+        run: |
+          echo "🗑️  Cleaning up target groups..."
+          aws elbv2 describe-target-groups --region ${{ env.AWS_REGION }} --query "TargetGroups[?contains(TargetGroupName, 'k8s-fcg')].TargetGroupArn" --output text | while read tg_arn; do
+            if [ ! -z "$tg_arn" ]; then
+              echo "Deleting: $tg_arn"
+              aws elbv2 delete-target-group --target-group-arn $tg_arn --region ${{ env.AWS_REGION }} || true
+            fi
+          done
+          echo "✅ Target groups cleaned up"
+        continue-on-error: true
+      
+      - name: Delete EKS Cluster
+        run: |
+          echo "🗑️  Deleting EKS cluster..."
+          eksctl delete cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --wait
+          echo "✅ Cluster deleted"
+      
+      - name: Summary
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ CLUSTER DESTRUCTION COMPLETE"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "⚠️  NOT DELETED (manual cleanup if needed):"
+          echo "   • IAM Policies (AWSLoadBalancerControllerIAMPolicy, FCGExternalSecretsPolicy)"
+          echo "   • AWS Secrets Manager secrets (fcg-api-*)"
+          echo "   • VPC and networking (vpc-0e6d1df089da1ec39)"
+          echo "   • ECR repositories"
+          echo ""
