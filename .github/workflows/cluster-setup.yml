@@ -27,6 +27,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # Configura credenciais AWS para permitir que o workflow crie recursos na AWS
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -34,6 +35,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
       
+      # eksctl é a ferramenta CLI oficial para criar e gerenciar clusters EKS
       - name: Install eksctl
         run: |
           curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz"
@@ -41,10 +43,13 @@ jobs:
           sudo mv /tmp/eksctl /usr/local/bin
           eksctl version
       
+      # Cria o cluster EKS usando a configuração em eks/cluster-config.yaml
+      # Isso inclui: VPC, node groups, OIDC provider e configurações de rede
+      # Tempo estimado: 15-20 minutos
       - name: Create EKS Cluster
         run: |
           eksctl create cluster -f eks/cluster-config.yaml
-          echo "✅ Cluster created successfully"
+          echo "Cluster created successfully"
       
       - name: Update kubeconfig
         run: |
@@ -55,6 +60,7 @@ jobs:
     name: Create Namespaces
     runs-on: ubuntu-latest
     needs: [setup-cluster]
+    # Executa se o cluster foi criado com sucesso OU se foi pulado (já existe)
     if: ${{ !cancelled() && (needs.setup-cluster.result == 'success' || needs.setup-cluster.result == 'skipped') }}
     
     steps:
@@ -68,15 +74,20 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
       
+      # Atualiza o kubeconfig local para apontar para o cluster EKS
+      # Isso permite usar kubectl para interagir com o cluster
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
       
+      # Namespaces são isolamentos lógicos dentro do cluster Kubernetes
+      # fcg: namespace principal onde todas as APIs serão deployadas
+      # external-secrets: namespace para o operador de sincronização de secrets
       - name: Create Namespaces
         run: |
           kubectl create namespace fcg --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -
-          echo "✅ Namespaces created"
+          echo "Namespaces created"
   
   setup-irsa-alb:
     name: Setup IRSA for AWS Load Balancer Controller
@@ -101,30 +112,36 @@ jobs:
           tar -xzf eksctl_Linux_amd64.tar.gz -C /tmp
           sudo mv /tmp/eksctl /usr/local/bin
       
+      # IAM Policy define as permissões necessárias para o ALB Controller
+      # Permite criar/gerenciar Application Load Balancers, Target Groups, etc.
       - name: Create IAM Policy for ALB Controller (if not exists)
         run: |
-          # Check if policy exists
+          # Verifica se a policy já existe para evitar erro de duplicação
           if aws iam get-policy --policy-arn arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:policy/AWSLoadBalancerControllerIAMPolicy 2>/dev/null; then
-            echo "✅ Policy already exists"
+            echo "Policy already exists"
           else
-            echo "📝 Creating IAM policy..."
+            echo "Creating IAM policy..."
             aws iam create-policy \
               --policy-name AWSLoadBalancerControllerIAMPolicy \
               --policy-document file://iam/alb-controller-policy.json || true
           fi
       
+      # IAM Policy para External Secrets ler secrets do AWS Secrets Manager
+      # Permite GetSecretValue e DescribeSecret para secrets específicos
       - name: Create IAM Policy for External Secrets (if not exists)
         run: |
-          # Check if policy exists
           if aws iam get-policy --policy-arn arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:policy/FCGExternalSecretsPolicy 2>/dev/null; then
-            echo "✅ Policy already exists"
+            echo "Policy already exists"
           else
-            echo "📝 Creating External Secrets IAM policy..."
+            echo "Creating External Secrets IAM policy..."
             aws iam create-policy \
               --policy-name FCGExternalSecretsPolicy \
               --policy-document file://iam/external-secrets-policy.json || true
           fi
       
+      # IRSA (IAM Roles for Service Accounts) permite que pods do Kubernetes
+      # assumam roles IAM sem precisar de credenciais hardcoded
+      # Cria um ServiceAccount no Kubernetes vinculado a uma IAM Role
       - name: Create IRSA for ALB Controller
         run: |
           eksctl create iamserviceaccount \
@@ -135,7 +152,7 @@ jobs:
             --approve \
             --override-existing-serviceaccounts \
             --region=${{ env.AWS_REGION }} || true
-          echo "✅ IRSA created for ALB Controller"
+          echo "IRSA created for ALB Controller"
   
   install-addons:
     name: Install Cluster Add-ons
@@ -158,19 +175,26 @@ jobs:
         run: |
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
       
+      # Helm é o gerenciador de pacotes do Kubernetes
+      # Facilita a instalação e gerenciamento de aplicações complexas
       - name: Install Helm
         run: |
           curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
           helm version
       
+      # Adiciona repositórios Helm oficiais da AWS e External Secrets
       - name: Add Helm Repositories
         run: |
           helm repo add eks https://aws.github.io/eks-charts
           helm repo add external-secrets https://charts.external-secrets.io
           helm repo update
       
+      # AWS Load Balancer Controller observa recursos Ingress no Kubernetes
+      # e automaticamente provisiona Application Load Balancers na AWS
+      # Isso elimina a necessidade de criar ALBs manualmente
       - name: Install AWS Load Balancer Controller
         run: |
+          # Obtém o VPC ID do cluster para configurar o controller
           VPC_ID=$(aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'cluster.resourcesVpcConfig.vpcId' --output text)
           
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
@@ -183,8 +207,11 @@ jobs:
             --wait \
             --timeout 5m
           
-          echo "✅ AWS Load Balancer Controller installed"
+          echo "AWS Load Balancer Controller installed"
       
+      # External Secrets Operator sincroniza secrets do AWS Secrets Manager
+      # para Kubernetes Secrets automaticamente
+      # Evita armazenar credenciais sensíveis em código ou ConfigMaps
       - name: Install External Secrets Operator
         run: |
           helm upgrade --install external-secrets external-secrets/external-secrets \
@@ -193,12 +220,16 @@ jobs:
             --wait \
             --timeout 5m
           
-          echo "✅ External Secrets Operator installed"
+          echo "External Secrets Operator installed"
       
+      # Validação robusta: aguarda até que os deployments estejam realmente prontos
+      # kubectl wait espera até que a condição 'available' seja verdadeira
+      # Isso garante que os pods estão rodando e prontos para receber tráfego
       - name: Verify Installations
         run: |
-          echo "📊 Validating deployments are ready..."
+          echo "Validating deployments are ready..."
           
+          # Timeout de 5 minutos para o controller ficar pronto
           echo "Waiting for AWS Load Balancer Controller..."
           kubectl wait --for=condition=available --timeout=300s \
             deployment/aws-load-balancer-controller -n kube-system
@@ -208,13 +239,13 @@ jobs:
             deployment/external-secrets -n external-secrets
           
           echo ""
-          echo "📊 Deployment status:"
+          echo "Deployment status:"
           kubectl get deployment -n kube-system aws-load-balancer-controller
           kubectl get deployment -n external-secrets external-secrets
           
           echo ""
-          echo "📊 Cluster nodes:"
+          echo "Cluster nodes:"
           kubectl get nodes
           
           echo ""
-          echo "✅ Cluster setup complete!"
+          echo "Cluster setup complete!"
