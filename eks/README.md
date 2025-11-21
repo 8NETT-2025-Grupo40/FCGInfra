@@ -1,21 +1,30 @@
-# Setup EKS com eksctl - Guia Rápido
+# FCGInfra - Setup do Cluster EKS
 
-> Setup simplificado do cluster EKS usando eksctl
+> Repositório de infraestrutura compartilhada para gerenciar o cluster EKS e add-ons comuns
+
+## Visão Geral
+
+Este repositório gerencia a infraestrutura EKS compartilhada para todas as APIs FCG. É responsável por:
+
+- Criar e configurar o cluster EKS
+- Instalar add-ons compartilhados (AWS Load Balancer Controller, External Secrets Operator)
+- Gerenciar políticas IAM e configurações IRSA
+- Criar namespaces compartilhados
+
+**IMPORTANTE:** Este repositório NÃO faz deploy de aplicações. Cada repositório de API (FCGUserApi, FCGOrderApi, etc.) gerencia seu próprio deployment.
 
 ## Pré-requisitos
 
-Antes de começar, você precisa ter:
+Antes de executar o setup, certifique-se de ter:
 
-- **AWS CLI** configurado com profile "local"
-- **eksctl** instalado ([instruções](https://eksctl.io/installation/))
+- **AWS CLI** configurado com credenciais apropriadas
+- **eksctl** instalado ([guia de instalação](https://eksctl.io/installation/))
 - **kubectl** instalado
 - **Helm 3** instalado
-- **IAM Policies** já criadas:
+- **AWS Account ID:** 478511033947
+- **Políticas IAM** criadas na AWS (podem ser criadas pelo script de setup):
   - `AWSLoadBalancerControllerIAMPolicy`
   - `FCGExternalSecretsPolicy`
-- **AWS Secrets Manager** com secrets:
-  - `fcg-api-user-connection-string`
-  - `fcg-jwt-config`
 
 ### Instalar eksctl (Windows)
 
@@ -32,243 +41,300 @@ eksctl version
 
 ---
 
-## Setup Completo (Um Comando)
+## Métodos de Setup
+
+### Opção 1: GitHub Actions (Recomendado para Produção)
+
+1. Acesse GitHub Actions: `https://github.com/8NETT-2025-Grupo40/FCGInfra/actions`
+2. Selecione o workflow: **"Setup EKS Cluster & Add-ons"**
+3. Clique em **"Run workflow"**
+4. Configure as opções:
+   - `skip_cluster`: Marque se o cluster já existe
+   - `skip_addons`: Marque se os add-ons já estão instalados
+5. Clique em **"Run workflow"**
+
+**Tempo estimado:** 20-25 minutos
+
+### Opção 2: Script PowerShell (Desenvolvimento Local)
 
 ```powershell
-# Executar setup completo
-./infrastructure/eks/setup.ps1
+# Setup completo
+./eks/setup.ps1
+
+# Pular criação do cluster (se já existe)
+./eks/setup.ps1 -SkipClusterCreation
+
+# Pular instalação de add-ons (se já instalados)
+./eks/setup.ps1 -SkipAddons
 ```
 
-**Tempo estimado:** 22-31 minutos (maioria passivo - aguardando AWS)
-
-### O que o script faz:
-
-1. Cria cluster EKS com Kubernetes 1.34
-2. Configura OIDC provider automaticamente
-3. Cria node group com 2x t3a.small
-4. Configura access entries para AndersonMori
-5. Cria IAM Service Accounts (IRSA) para:
-   - AWS Load Balancer Controller
-   - External Secrets Operator
-6. Instala add-ons via Helm (com retry automático):
-   - AWS Load Balancer Controller
-   - External Secrets Operator
-7. Faz deploy da aplicação FCG User API
-8. Provisiona ALB e testa health endpoint
+**Tempo estimado:** 20-25 minutos (maior parte aguardando recursos da AWS)
 
 ---
 
-## Estrutura de Arquivos
+## O Que é Criado
+
+### Componentes de Infraestrutura
+
+1. **Cluster EKS**
+   - Nome: `fcg`
+   - Região: `us-east-1`
+   - Versão Kubernetes: 1.34
+   - VPC: `vpc-0e6d1df089da1ec39` (existente)
+   - OIDC provider habilitado
+
+2. **Node Group**
+   - Nome: `low-cost`
+   - Tipo de instância: `t3a.small`
+   - Capacidade desejada: 2 nodes
+   - Mín: 2, Máx: 3
+   - Zonas de disponibilidade: us-east-1a, us-east-1b
+
+3. **Namespaces**
+   - `fcg` (para deployments de aplicações)
+   - `external-secrets` (para External Secrets Operator)
+
+4. **Políticas IAM** (se não existirem)
+   - `AWSLoadBalancerControllerIAMPolicy`
+   - `FCGExternalSecretsPolicy`
+
+5. **IRSA (IAM Roles for Service Accounts)**
+   - Service account do AWS Load Balancer Controller
+   - Vinculado à AWSLoadBalancerControllerIAMPolicy
+
+6. **Add-ons Helm**
+   - AWS Load Balancer Controller (namespace kube-system)
+   - External Secrets Operator (namespace external-secrets)
+
+---
+
+## Estrutura do Repositório
 
 ```
-FCGUserApi/
-├── infrastructure/
-│   ├── eks/
-│   │   ├── cluster-config.yaml   # Configuração do cluster eksctl
-│   │   ├── setup.ps1             # Script de setup completo
-│   │   ├── delete.ps1            # Script de limpeza
-│   │   ├── validate.ps1          # Validação de pré-requisitos
-│   │   └── README.md             # Este arquivo
-│   ├── charts/
-│   │   ├── Chart.yaml
-│   │   ├── values.yaml           # ATUALIZADO (serviceAccount.create: false)
-│   │   └── templates/
-│   │       ├── deployment.yaml
-│   │       ├── service.yaml
-│   │       ├── ingress.yaml
-│   │       ├── serviceaccount.yaml
-│   │       ├── secretstore.yaml
-│   │       └── externalsecret.yaml
-│   └── iam/
-│       ├── alb-controller-policy.json
-│       └── external-secrets-policy.json
-└── src/                          # Código fonte da aplicação
+FCGInfra/
+├── .github/
+│   └── workflows/
+│       ├── cluster-setup.yml     # Workflow GitHub Actions para criação do cluster
+│       └── cluster-destroy.yml   # Workflow GitHub Actions para deleção do cluster
+├── eks/
+│   ├── cluster-config.yaml       # Configuração do cluster eksctl
+│   ├── setup.ps1                 # Script PowerShell de setup
+│   ├── delete.ps1                # Script PowerShell de limpeza
+│   ├── validate.ps1              # Script de validação de pré-requisitos
+│   └── README.md                 # Este arquivo
+├── iam/
+│   ├── alb-controller-policy.json        # Política IAM para ALB Controller
+│   └── external-secrets-policy.json      # Política IAM para External Secrets
+└── README.md                     # Documentação principal do repositório
 ```
 
 ---
 
 ## Validação de Pré-requisitos
 
-Antes de executar o setup, você pode validar se o ambiente está configurado:
+Antes de executar o setup, valide seu ambiente:
 
 ```powershell
-./infrastructure/eks/validate.ps1
+./eks/validate.ps1
 ```
 
 O script verifica:
-- AWS CLI, eksctl, kubectl, Helm instalados
-- Credenciais AWS válidas
-- IAM Policies existentes
-- AWS Secrets Manager configurado
-- Arquivos de configuração presentes
+- Ferramentas necessárias instaladas (AWS CLI, eksctl, kubectl, Helm)
+- Validade das credenciais AWS
+- Existência das políticas IAM (opcional)
+- Presença dos arquivos de configuração
 
 ---
 
-## Execução por Fases (Troubleshooting)
+## Verificação Após Setup
 
-Se algo falhar, você pode executar por fases:
-
-```powershell
-# Pular criação do cluster (se já existe)
-./infrastructure/eks/setup.ps1 -SkipClusterCreation
-
-# Pular add-ons (se já instalados)
-./infrastructure/eks/setup.ps1 -SkipAddons
-
-# Pular aplicação (só subir infraestrutura)
-./infrastructure/eks/setup.ps1 -SkipApp
-```
-
----
-
-## Deletar o Cluster
+Após o setup bem-sucedido, verifique a instalação:
 
 ```powershell
-./infrastructure/eks/delete.ps1
-```
-
-Digite `DELETE` para confirmar. Isso remove:
-- Aplicação (Helm release)
-- Add-ons (External Secrets, Load Balancer Controller)
-- Cluster EKS
-- Node groups
-- IAM Service Accounts (roles com OIDC)
-- OIDC Provider
-
-**Recursos que PERMANECEM:**
-- IAM Policies (AWSLoadBalancerControllerIAMPolicy, FCGExternalSecretsPolicy)
-- AWS Secrets Manager (fcg-api-user-connection-string, fcg-jwt-config)
-- VPC (vpc-0e6d1df089da1ec39)
-
----
-
-## Verificação Pós-Setup
-
-```powershell
-# Ver nodes
+# Verificar nodes do cluster
 kubectl get nodes
 
-# Ver pods da aplicação
-kubectl get pods -n fcg
+# Verificar AWS Load Balancer Controller
+kubectl get deployment -n kube-system aws-load-balancer-controller
 
-# Ver External Secrets
-kubectl get externalsecret -n fcg
+# Verificar External Secrets Operator
+kubectl get deployment -n external-secrets external-secrets
 
-# Ver Ingress/ALB
-kubectl get ingress -n fcg
+# Verificar namespaces
+kubectl get namespace fcg
+kubectl get namespace external-secrets
 
-# Testar aplicação
-$ALB_URL = kubectl get ingress -n fcg fcg-user-api-fcg-user-api -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
-curl "http://$ALB_URL/health"
+# Verificar ausência de recursos de aplicação (esperado)
+kubectl get all -n fcg
+# No resources found in fcg namespace.
 ```
+
+**Nota:** Neste ponto, NÃO deve haver recursos Ingress ou ALB. Estes serão criados pelos deployments individuais das APIs.
+
+---
+
+## Deleção do Cluster
+
+### Opção 1: GitHub Actions
+
+1. Acesse: `https://github.com/8NETT-2025-Grupo40/FCGInfra/actions`
+2. Selecione o workflow: **"Destroy EKS Cluster"**
+3. Clique em **"Run workflow"**
+4. Digite **"DESTROY"** no campo de confirmação
+5. Clique em **"Run workflow"**
+
+### Opção 2: Script PowerShell
+
+```powershell
+./eks/delete.ps1
+```
+
+Digite `DELETE` para confirmar.
+
+### O Que é Deletado
+
+- Cluster EKS e node groups
+- IAM Service Accounts (roles IRSA)
+- OIDC Provider
+- Helm releases (Load Balancer Controller, External Secrets Operator)
+- Application Load Balancers (se existirem)
+- Target Groups
+
+### O Que Permanece
+
+Os seguintes recursos NÃO são deletados e devem ser gerenciados manualmente:
+
+- Políticas IAM (`AWSLoadBalancerControllerIAMPolicy`, `FCGExternalSecretsPolicy`)
+- VPC e networking (`vpc-0e6d1df089da1ec39`)
+- Secrets do AWS Secrets Manager
+- Repositórios ECR
 
 ---
 
 ## Troubleshooting
 
-### Pods em CreateContainerConfigError
+### Load Balancer Controller Não Está Executando
 
-**Causa:** External Secret não sincronizou.
-
+**Verificar status do deployment:**
 ```powershell
-# Verificar External Secret
-kubectl describe externalsecret -n fcg
+kubectl get deployment -n kube-system aws-load-balancer-controller
+kubectl logs -n kube-system deployment/aws-load-balancer-controller
+```
 
-# Verificar logs do External Secrets Operator
+**Causas comuns:**
+- IRSA não configurado corretamente
+- Política IAM ausente ou incorreta
+- VPC ID incompatível
+
+### External Secrets Operator Não Está Executando
+
+**Verificar status do deployment:**
+```powershell
+kubectl get deployment -n external-secrets external-secrets
 kubectl logs -n external-secrets deployment/external-secrets
 ```
 
-### ALB não provisiona
+**Causas comuns:**
+- CRDs não instalados
+- Namespace não criado
+- Timeout na instalação do Helm
 
-**Causa:** Load Balancer Controller com erro.
+### Falha na Criação do Cluster
 
+**Verificar logs do eksctl:**
 ```powershell
-# Ver logs do controller
-kubectl logs -n kube-system deployment/aws-load-balancer-controller
-
-# Ver status do ingress
-kubectl describe ingress -n fcg
+eksctl utils describe-stacks --region us-east-1 --cluster fcg
 ```
 
-### Erro "serviceaccount already exists"
+**Causas comuns:**
+- IDs de VPC ou subnet incorretos
+- Permissões IAM insuficientes
+- Limites de recursos na conta AWS
+- Versão do Kubernetes não suportada pelo EKS
 
-**Causa:** values.yaml ainda tem `create: true`.
+### Falha na Criação do IRSA
 
-**Solução:** Editar `infrastructure/charts/values.yaml`:
-```yaml
-serviceAccount:
-  create: false  # ← Mudar para false
-  name: "fcg-user-api-fcg-user-api"
+**Verificar se o OIDC provider existe:**
+```powershell
+aws eks describe-cluster --name fcg --region us-east-1 --query 'cluster.identity.oidc.issuer'
 ```
 
----
-
-## Diferenças: Setup Manual vs eksctl
-
-| Aspecto | Setup Manual | Setup eksctl |
-|---------|--------------|--------------|
-| Comandos | ~50 comandos | 1 script |
-| Tempo ativo | ~30 min | ~5 min |
-| OIDC/IRSA | Manual (propenso a erro) | Automático |
-| Roles IAM | Customizadas | Geradas pelo eksctl |
-| Reprodutibilidade | Baixa | Alta (YAML versionado) |
-| Troubleshooting | Difícil | Mais fácil |
+**Solução:** Re-executar com flag `--override-existing-serviceaccounts` (já incluída nos scripts)
 
 ---
 
-## Configurações do Cluster
+## Configuração do Cluster
 
-**Cluster:**
-- Nome: `fcg`
-- Região: `us-east-1`
-- Kubernetes: `1.34`
-- VPC: `vpc-0e6d1df089da1ec39`
+### Detalhes do Cluster
+- **Nome:** `fcg`
+- **Região:** `us-east-1`
+- **Versão Kubernetes:** `1.34`
+- **VPC ID:** `vpc-0e6d1df089da1ec39` (existente)
+- **Modo de Autenticação:** `API_AND_CONFIG_MAP`
 
-**Node Group:**
-- Nome: `low-cost`
-- Tipo: `t3a.small`
-- Quantidade: 2 (min) - 3 (max)
-- Subnets: us-east-1a, us-east-1b
+### Node Group
+- **Nome:** `low-cost`
+- **Tipo de Instância:** `t3a.small`
+- **Capacidade Desejada:** 2 nodes
+- **Tamanho Mínimo:** 2
+- **Tamanho Máximo:** 3
+- **Zonas de Disponibilidade:** us-east-1a, us-east-1b
 
-**Add-ons:**
-- AWS Load Balancer Controller (via Helm)
-- External Secrets Operator (via Helm)
+### Add-ons
+- **AWS Load Balancer Controller:** Instalado via Helm no namespace `kube-system`
+- **External Secrets Operator:** Instalado via Helm no namespace `external-secrets`
 
 ---
 
-## Links Úteis
+## Integração com Repositórios de APIs
 
-- [eksctl Documentation](https://eksctl.io/)
+Cada repositório de API (FCGUserApi, FCGOrderApi, etc.) deve:
+
+1. **Criar seu próprio IRSA** para External Secrets:
+   ```bash
+   eksctl create iamserviceaccount \
+     --cluster=fcg \
+     --namespace=fcg \
+     --name=<api-name>-sa \
+     --attach-policy-arn=arn:aws:iam::478511033947:policy/FCGExternalSecretsPolicy \
+     --approve \
+     --region=us-east-1
+   ```
+
+2. **Usar ALB compartilhado** via annotation no Ingress:
+   ```yaml
+   metadata:
+     annotations:
+       alb.ingress.kubernetes.io/group.name: fcg
+   ```
+
+3. **Fazer deploy no namespace `fcg`:**
+   ```bash
+   helm upgrade --install <release-name> ./charts -n fcg
+   ```
+
+---
+
+## Melhores Práticas
+
+1. **Controle de Versão:** Sempre commit mudanças no `cluster-config.yaml` no Git
+2. **Políticas IAM:** Mantenha as políticas IAM - elas são reutilizáveis em recriações do cluster
+3. **Execução em Fases:** Use flags de skip (`-SkipClusterCreation`, `skip_cluster`) para atualizações parciais
+4. **Validação Primeiro:** Execute `validate.ps1` antes do setup para identificar problemas de configuração antecipadamente
+5. **Monitorar Recursos:** Verifique regularmente custos e utilização de recursos do cluster
+6. **Documentação:** Atualize este README ao fazer mudanças na infraestrutura
+
+---
+
+## Referências
+
+- [Documentação eksctl](https://eksctl.io/)
 - [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/)
 - [External Secrets Operator](https://external-secrets.io/)
-- [EKS Best Practices](https://aws.github.io/aws-eks-best-practices/)
+- [Guia de Melhores Práticas EKS](https://aws.github.io/aws-eks-best-practices/)
 
 ---
 
-## Dicas
-
-1. **Sempre use o profile "local":** O script já configura `$env:AWS_PROFILE = "local"`
-2. **Commit do cluster-config.yaml:** Versione no Git para rastreabilidade
-3. **Não delete as IAM Policies:** São reutilizáveis entre clusters
-4. **Aguarde o ALB:** Leva 2-3 minutos após o deploy para ficar ativo
-5. **Use -SkipClusterCreation:** Para reinstalar apenas add-ons/app
-6. **Retry Automático:** O script tenta até 3 vezes em caso de falhas de rede
-7. **Valide antes de executar:** Use `validate.ps1` para verificar pré-requisitos
-
----
-
-## Próximos Passos
-
-Após o setup bem-sucedido:
-
-1. Configurar CI/CD (GitHub Actions)
-2. Configurar monitoramento (CloudWatch, Prometheus)
-3. Configurar domínio customizado (Route 53)
-4. Habilitar HTTPS (ACM + ALB)
-5. Configurar autoscaling (HPA, Cluster Autoscaler)
-
----
-
-**Criado em:** 18 de Novembro de 2025  
-**Versão:** 1.0  
-**Account ID:** 478511033947
+**Última Atualização:** 20 de Novembro de 2025  
+**AWS Account ID:** 478511033947  
+**Repositório:** FCGInfra
