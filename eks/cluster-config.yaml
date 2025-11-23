@@ -34,9 +34,9 @@ accessConfig:
 managedNodeGroups:
   - name: low-cost
     instanceType: t3a.small
-    desiredCapacity: 2
+    desiredCapacity: 3
     minSize: 2
-    maxSize: 3
+    maxSize: 4
     # Usar apenas 2 subnets para nodes
     subnets:
       - subnet-08035017dcc5c41e7
