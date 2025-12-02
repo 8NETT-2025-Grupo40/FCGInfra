@@ -11,7 +11,7 @@ Este repositório gerencia a infraestrutura EKS compartilhada para todas as APIs
 - Gerenciar políticas IAM e configurações IRSA
 - Criar namespaces compartilhados
 
-**IMPORTANTE:** Este repositório NÃO faz deploy de aplicações. Cada repositório de API (FCGUserApi, FCGOrderApi, etc.) gerencia seu próprio deployment.
+**IMPORTANTE:** Este repositório NÃO faz deploy de aplicações. Cada repositório de API (FCGUserApi, FCGPaymentApi, etc.) gerencia seu próprio deployment.
 
 ## Pré-requisitos
 
@@ -288,7 +288,7 @@ aws eks describe-cluster --name fcg --region us-east-1 --query 'cluster.identity
 
 ## Integração com Repositórios de APIs
 
-Cada repositório de API (FCGUserApi, FCGOrderApi, etc.) deve:
+Cada repositório de API (FCGUserApi, FCGPaymentApi, etc.) deve:
 
 1. **Criar seu próprio IRSA** para External Secrets:
    ```bash

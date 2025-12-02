@@ -145,7 +145,7 @@ Este repositório é responsável por:
 
 ### O Que Cada Repositório de API Deve Fazer
 
-Cada serviço de API (ex: `FCGUserApi`, `FCGOrderApi`) é responsável por:
+Cada serviço de API (ex: `FCGUserApi`, `FCGPaymentApi`) é responsável por:
 
 1. **Build e Push da Imagem Docker para ECR**
    ```bash
@@ -316,11 +316,6 @@ helm upgrade external-secrets external-secrets/external-secrets \
   -n external-secrets \
   --reuse-values
 ```
-
-## Repositórios Relacionados
-
-- [FCGUserApi](https://github.com/8NETT-2025-Grupo40/FCGUserApi) - API de autenticação de usuários
-- [FCGOrderApi](https://github.com/8NETT-2025-Grupo40/FCGOrderApi) - API de gerenciamento de pedidos (exemplo)
 
 ## Documentação
 
