@@ -153,11 +153,73 @@ jobs:
             --override-existing-serviceaccounts \
             --region=${{ env.AWS_REGION }} || true
           echo "IRSA created for ALB Controller"
+
+  # ============================================
+  # CLOUDWATCH APPLICATION SIGNALS IRSA
+  # ============================================
+  setup-irsa-cloudwatch:
+    name: Setup IRSA for CloudWatch Application Signals
+    runs-on: ubuntu-latest
+    needs: [setup-namespaces]
+    if: ${{ !cancelled() && !inputs.skip_addons }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Install eksctl
+        run: |
+          curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz"
+          tar -xzf eksctl_Linux_amd64.tar.gz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+      
+      # Namespace para o CloudWatch Agent e ADOT Collector
+      - name: Create CloudWatch namespace
+        run: |
+          kubectl create namespace amazon-cloudwatch --dry-run=client -o yaml | kubectl apply -f -
+          echo "Namespace amazon-cloudwatch created"
+      
+      # IAM Policy para CloudWatch Application Signals
+      # Permite enviar logs, traces e métricas para CloudWatch e X-Ray
+      - name: Create IAM Policy for CloudWatch Application Signals (if not exists)
+        run: |
+          if aws iam get-policy --policy-arn arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:policy/CloudWatchApplicationSignalsPolicy 2>/dev/null; then
+            echo "Policy already exists"
+          else
+            echo "Creating CloudWatch Application Signals IAM policy..."
+            aws iam create-policy \
+              --policy-name CloudWatchApplicationSignalsPolicy \
+              --policy-document file://iam/cloudwatch-application-signals-policy.json || true
+          fi
+      
+      # IRSA para CloudWatch Agent - permite enviar telemetria sem credenciais hardcoded
+      - name: Create IRSA for CloudWatch Application Signals
+        run: |
+          eksctl create iamserviceaccount \
+            --cluster=${{ env.CLUSTER_NAME }} \
+            --namespace=amazon-cloudwatch \
+            --name=cloudwatch-agent \
+            --attach-policy-arn=arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:policy/CloudWatchApplicationSignalsPolicy \
+            --approve \
+            --override-existing-serviceaccounts \
+            --region=${{ env.AWS_REGION }} || true
+          echo "IRSA created for CloudWatch Application Signals"
   
   install-addons:
     name: Install Cluster Add-ons
     runs-on: ubuntu-latest
-    needs: [setup-irsa-alb]
+    needs: [setup-irsa-alb, setup-irsa-cloudwatch]
     if: ${{ !cancelled() && !inputs.skip_addons }}
     
     steps:
@@ -222,6 +284,89 @@ jobs:
           
           echo "External Secrets Operator installed"
       
+      # ============================================
+      # CLOUDWATCH APPLICATION SIGNALS
+      # ============================================
+      # CloudWatch Application Signals fornece observabilidade automática
+      # com métricas, traces e logs para aplicações no EKS
+      # Usa ADOT (AWS Distro for OpenTelemetry) para coleta de telemetria
+      - name: Install CloudWatch Application Signals Add-on
+        run: |
+          echo "Installing CloudWatch Application Signals add-on..."
+          
+          # Verifica se o add-on já existe
+          if aws eks describe-addon --cluster-name ${{ env.CLUSTER_NAME }} --addon-name amazon-cloudwatch-observability --region ${{ env.AWS_REGION }} 2>/dev/null; then
+            echo "Add-on already exists, updating..."
+            aws eks update-addon \
+              --cluster-name ${{ env.CLUSTER_NAME }} \
+              --addon-name amazon-cloudwatch-observability \
+              --region ${{ env.AWS_REGION }} \
+              --resolve-conflicts OVERWRITE || true
+          else
+            echo "Installing add-on..."
+            aws eks create-addon \
+              --cluster-name ${{ env.CLUSTER_NAME }} \
+              --addon-name amazon-cloudwatch-observability \
+              --region ${{ env.AWS_REGION }} || true
+          fi
+          
+          echo "CloudWatch Application Signals add-on installed"
+      
+      # Aguarda os pods do CloudWatch ficarem prontos antes de prosseguir
+      - name: Wait for CloudWatch Pods
+        run: |
+          echo "Waiting for CloudWatch pods to be ready..."
+          sleep 30
+          
+          # Aguarda o DaemonSet estar pronto (pode levar alguns minutos)
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=cloudwatch-agent \
+            -n amazon-cloudwatch \
+            --timeout=300s || true
+          
+          echo "CloudWatch Application Signals status:"
+          kubectl get pods -n amazon-cloudwatch
+          kubectl get daemonsets -n amazon-cloudwatch
+      
+      # Configura retenção de 7 dias para todos os log groups do Application Signals
+      # Loop automático busca todos os log groups existentes e aplica a política
+      # Isso evita custos com armazenamento indefinido de logs
+      - name: Configure Log Retention (7 days)
+        run: |
+          echo "Configuring log retention for Application Signals log groups..."
+          
+          # Aplica retenção para log groups do Application Signals
+          aws logs describe-log-groups \
+            --log-group-name-prefix /aws/application-signals \
+            --region ${{ env.AWS_REGION }} \
+            --query 'logGroups[].logGroupName' \
+            --output text 2>/dev/null | tr '\t' '\n' | while read log_group; do
+            if [ ! -z "$log_group" ]; then
+              echo "Setting 7-day retention for: $log_group"
+              aws logs put-retention-policy \
+                --log-group-name "$log_group" \
+                --retention-in-days 7 \
+                --region ${{ env.AWS_REGION }} || true
+            fi
+          done
+          
+          # Aplica retenção para log groups do Container Insights
+          aws logs describe-log-groups \
+            --log-group-name-prefix /aws/containerinsights/fcg \
+            --region ${{ env.AWS_REGION }} \
+            --query 'logGroups[].logGroupName' \
+            --output text 2>/dev/null | tr '\t' '\n' | while read log_group; do
+            if [ ! -z "$log_group" ]; then
+              echo "Setting 7-day retention for: $log_group"
+              aws logs put-retention-policy \
+                --log-group-name "$log_group" \
+                --retention-in-days 7 \
+                --region ${{ env.AWS_REGION }} || true
+            fi
+          done
+          
+          echo "Log retention configured (7 days)"
+      
       # Validação robusta: aguarda até que os deployments estejam realmente prontos
       # kubectl wait espera até que a condição 'available' seja verdadeira
       # Isso garante que os pods estão rodando e prontos para receber tráfego
@@ -244,8 +389,17 @@ jobs:
           kubectl get deployment -n external-secrets external-secrets
           
           echo ""
+          echo "CloudWatch Application Signals status:"
+          kubectl get pods -n amazon-cloudwatch
+          kubectl get daemonsets -n amazon-cloudwatch
+          
+          echo ""
           echo "Cluster nodes:"
           kubectl get nodes
+          
+          echo ""
+          echo "Node resource usage (monitor memory for t3a.small nodes):"
+          kubectl top nodes || echo "Metrics server not available yet"
           
           echo ""
           echo "Cluster setup complete!"

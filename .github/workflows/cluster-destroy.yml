@@ -71,6 +71,22 @@ jobs:
           echo "Helm releases removed"
         continue-on-error: true
       
+      # Remove o add-on do CloudWatch Application Signals antes de deletar o cluster
+      # Isso garante que os recursos do CloudWatch sejam limpos corretamente
+      - name: Delete CloudWatch Application Signals Add-on
+        run: |
+          echo "Removing CloudWatch Application Signals add-on..."
+          aws eks delete-addon \
+            --cluster-name ${{ env.CLUSTER_NAME }} \
+            --addon-name amazon-cloudwatch-observability \
+            --region ${{ env.AWS_REGION }} || true
+          
+          echo "Waiting for add-on deletion..."
+          sleep 30
+          
+          echo "CloudWatch add-on removed"
+        continue-on-error: true
+      
       # Força a deleção de ALBs que podem ter sido criados pelas aplicações
       # O sleep de 60s dá tempo para o controller processar a remoção dos Ingress
       - name: Delete Load Balancers
@@ -120,8 +136,9 @@ jobs:
           echo "========================================"
           echo ""
           echo "NOT DELETED (manual cleanup if needed):"
-          echo "   - IAM Policies (AWSLoadBalancerControllerIAMPolicy, FCGExternalSecretsPolicy)"
+          echo "   - IAM Policies (AWSLoadBalancerControllerIAMPolicy, FCGExternalSecretsPolicy, CloudWatchApplicationSignalsPolicy)"
           echo "   - AWS Secrets Manager secrets (fcg-api-*)"
           echo "   - VPC and networking (vpc-0e6d1df089da1ec39)"
           echo "   - ECR repositories"
+          echo "   - CloudWatch Log Groups (/aws/application-signals/*, /aws/containerinsights/fcg/*)"
           echo ""

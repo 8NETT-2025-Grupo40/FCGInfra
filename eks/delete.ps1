@@ -35,6 +35,16 @@ Start-Sleep -Seconds 90
 
 # 2. Deletar add-ons
 Write-Host "`n[2/3] Deletando add-ons..." -ForegroundColor Yellow
+
+# Deletar CloudWatch Application Signals add-on primeiro
+Write-Host "  > Deletando CloudWatch Application Signals add-on..." -ForegroundColor Gray
+aws eks delete-addon `
+    --cluster-name fcg `
+    --addon-name amazon-cloudwatch-observability `
+    --region us-east-1 2>$null
+
+Start-Sleep -Seconds 20
+
 helm uninstall external-secrets -n external-secrets --ignore-not-found
 helm uninstall aws-load-balancer-controller -n kube-system --ignore-not-found
 
@@ -52,7 +62,10 @@ Write-Host "━━━━━━━━━━━━━━━━━━━━━━�
 Write-Host "[INFO] Recursos que PERMANECEM (não foram deletados):" -ForegroundColor Cyan
 Write-Host "  • IAM Policy: AWSLoadBalancerControllerIAMPolicy" -ForegroundColor Gray
 Write-Host "  • IAM Policy: FCGExternalSecretsPolicy" -ForegroundColor Gray
+Write-Host "  • IAM Policy: CloudWatchApplicationSignalsPolicy" -ForegroundColor Gray
 Write-Host "  • AWS Secrets: fcg-api-user-connection-string" -ForegroundColor Gray
 Write-Host "  • AWS Secrets: fcg-jwt-config" -ForegroundColor Gray
-Write-Host "  • VPC: vpc-0e6d1df089da1ec39`n" -ForegroundColor Gray
+Write-Host "  • VPC: vpc-0e6d1df089da1ec39" -ForegroundColor Gray
+Write-Host "  • CloudWatch Logs: /aws/application-signals/* (retenção 7 dias)" -ForegroundColor Gray
+Write-Host "  • CloudWatch Logs: /aws/containerinsights/fcg/* (retenção 7 dias)`n" -ForegroundColor Gray
 

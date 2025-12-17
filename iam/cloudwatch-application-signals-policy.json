@@ -1,0 +1,68 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CloudWatchLogsPermissions",
+      "Effect": "Allow",
+      "Action": [
+        "logs:PutLogEvents",
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:DescribeLogStreams",
+        "logs:DescribeLogGroups",
+        "logs:PutRetentionPolicy"
+      ],
+      "Resource": [
+        "arn:aws:logs:us-east-1:478511033947:log-group:/aws/application-signals/*",
+        "arn:aws:logs:us-east-1:478511033947:log-group:/aws/containerinsights/fcg/*"
+      ]
+    },
+    {
+      "Sid": "XRayTracesPermissions",
+      "Effect": "Allow",
+      "Action": [
+        "xray:PutTraceSegments",
+        "xray:PutTelemetryRecords",
+        "xray:GetSamplingRules",
+        "xray:GetSamplingTargets",
+        "xray:GetSamplingStatisticSummaries"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudWatchMetricsPermissions",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": [
+            "AWS/ApplicationSignals",
+            "ContainerInsights"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "EC2DescribePermissions",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeVolumes",
+        "ec2:DescribeTags",
+        "ec2:DescribeInstances",
+        "ec2:DescribeNetworkInterfaces"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EKSDescribePermissions",
+      "Effect": "Allow",
+      "Action": [
+        "eks:DescribeCluster"
+      ],
+      "Resource": "arn:aws:eks:us-east-1:478511033947:cluster/fcg"
+    }
+  ]
+}
