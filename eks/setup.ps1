@@ -82,6 +82,7 @@ Write-Host "  > Criando namespaces..." -ForegroundColor Gray
 kubectl create namespace fcg --dry-run=client -o yaml | kubectl apply -f -
 kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -
 kubectl create namespace external-dns --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace amazon-cloudwatch --dry-run=client -o yaml | kubectl apply -f -
 
 # IRSA para AWS Load Balancer Controller
 Write-Host "  > Criando IRSA para Load Balancer Controller..." -ForegroundColor Gray
@@ -101,6 +102,29 @@ eksctl create iamserviceaccount `
   --namespace=fcg `
   --name=fcg-user-api-fcg-user-api `
   --attach-policy-arn=arn:aws:iam::478511033947:policy/FCGExternalSecretsPolicy `
+  --approve `
+  --override-existing-serviceaccounts `
+  --region=us-east-1
+
+# IRSA para CloudWatch Application Signals
+Write-Host "  > Criando IAM Policy para CloudWatch Application Signals..." -ForegroundColor Gray
+$cwPolicyArn = "arn:aws:iam::478511033947:policy/CloudWatchApplicationSignalsPolicy"
+$cwPolicyExists = aws iam get-policy --policy-arn $cwPolicyArn 2>$null
+if (-not $cwPolicyExists) {
+    Write-Host "    > Criando IAM Policy..." -ForegroundColor Gray
+    aws iam create-policy `
+        --policy-name CloudWatchApplicationSignalsPolicy `
+        --policy-document file://iam/cloudwatch-application-signals-policy.json
+} else {
+    Write-Host "    > Policy já existe" -ForegroundColor Gray
+}
+
+Write-Host "  > Criando IRSA para CloudWatch Application Signals..." -ForegroundColor Gray
+eksctl create iamserviceaccount `
+  --cluster=fcg `
+  --namespace=amazon-cloudwatch `
+  --name=cloudwatch-agent `
+  --attach-policy-arn=$cwPolicyArn `
   --approve `
   --override-existing-serviceaccounts `
   --region=us-east-1
@@ -144,6 +168,76 @@ if (-not $SkipAddons) {
           --set installCRDs=true `
           --wait
     }
+    
+    # Instalar CloudWatch Application Signals Add-on
+    Write-Host "  > Instalando CloudWatch Application Signals..." -ForegroundColor Gray
+    $addonExists = aws eks describe-addon --cluster-name fcg --addon-name amazon-cloudwatch-observability --region us-east-1 2>$null
+    
+    if ($addonExists) {
+        Write-Host "    > Add-on já existe, atualizando..." -ForegroundColor Gray
+        aws eks update-addon `
+            --cluster-name fcg `
+            --addon-name amazon-cloudwatch-observability `
+            --region us-east-1 `
+            --resolve-conflicts OVERWRITE
+    } else {
+        Write-Host "    > Instalando add-on..." -ForegroundColor Gray
+        aws eks create-addon `
+            --cluster-name fcg `
+            --addon-name amazon-cloudwatch-observability `
+            --region us-east-1
+    }
+    
+    Write-Host "  > Aguardando CloudWatch pods ficarem prontos..." -ForegroundColor Gray
+    Start-Sleep -Seconds 30
+    
+    Invoke-WithRetry -Description "Verificar CloudWatch pods" -Command {
+        kubectl wait --for=condition=ready pod `
+            -l app.kubernetes.io/name=cloudwatch-agent `
+            -n amazon-cloudwatch `
+            --timeout=300s
+    } -MaxAttempts 2
+    
+    Write-Host "    > CloudWatch Application Signals status:" -ForegroundColor Gray
+    kubectl get pods -n amazon-cloudwatch
+    kubectl get daemonsets -n amazon-cloudwatch
+    
+    # Configurar retenção de logs (7 dias)
+    Write-Host "  > Configurando retenção de logs (7 dias)..." -ForegroundColor Gray
+    
+    # Buscar e configurar log groups do Application Signals
+    $appSignalsLogGroups = aws logs describe-log-groups `
+        --log-group-name-prefix /aws/application-signals `
+        --region us-east-1 `
+        --query 'logGroups[].logGroupName' `
+        --output text 2>$null
+    
+    if ($appSignalsLogGroups) {
+        $appSignalsLogGroups -split "`t" | ForEach-Object {
+            if ($_) {
+                Write-Host "    > Configurando retenção para: $_" -ForegroundColor Gray
+                aws logs put-retention-policy --log-group-name $_ --retention-in-days 7 --region us-east-1
+            }
+        }
+    }
+    
+    # Buscar e configurar log groups do Container Insights
+    $containerInsightsLogGroups = aws logs describe-log-groups `
+        --log-group-name-prefix /aws/containerinsights/fcg `
+        --region us-east-1 `
+        --query 'logGroups[].logGroupName' `
+        --output text 2>$null
+    
+    if ($containerInsightsLogGroups) {
+        $containerInsightsLogGroups -split "`t" | ForEach-Object {
+            if ($_) {
+                Write-Host "    > Configurando retenção para: $_" -ForegroundColor Gray
+                aws logs put-retention-policy --log-group-name $_ --retention-in-days 7 --region us-east-1
+            }
+        }
+    }
+    
+    Write-Host "    > Retenção de logs configurada (7 dias)" -ForegroundColor Gray
     
     Write-Host "[OK] Add-ons instalados!`n" -ForegroundColor Green
     
@@ -232,6 +326,8 @@ Write-Host "[INFO] Comandos úteis:" -ForegroundColor Cyan
 Write-Host "  • Ver pods:     kubectl get pods -n fcg" -ForegroundColor Gray
 Write-Host "  • Ver ingress:  kubectl get ingress -n fcg" -ForegroundColor Gray
 Write-Host "  • Ver secrets:  kubectl get externalsecret -n fcg" -ForegroundColor Gray
+Write-Host "  • CloudWatch:   kubectl get pods -n amazon-cloudwatch" -ForegroundColor Gray
+Write-Host "  • Node memory:  kubectl top nodes" -ForegroundColor Gray
 Write-Host "  • Logs da app:  kubectl logs -n fcg -l app.kubernetes.io/name=fcg-user-api" -ForegroundColor Gray
-Write-Host "  • Deletar tudo: ./infrastructure/eks/delete.ps1`n" -ForegroundColor Gray
+Write-Host "  • Deletar tudo: ./eks/delete.ps1`n" -ForegroundColor Gray
 

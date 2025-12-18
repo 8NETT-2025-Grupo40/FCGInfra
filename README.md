@@ -16,8 +16,9 @@ fcg-infra/
 │   ├── validate.ps1           # Pre-flight validation
 │   └── README.md              # EKS documentation
 ├── iam/
-│   ├── alb-controller-policy.json        # IAM policy for ALB Controller
-│   └── external-secrets-policy.json      # IAM policy for External Secrets
+│   ├── alb-controller-policy.json                  # IAM policy for ALB Controller
+│   ├── external-secrets-policy.json                # IAM policy for External Secrets
+│   └── cloudwatch-application-signals-policy.json  # IAM policy for CloudWatch
 └── README.md                  # This file
 ```
 
@@ -141,6 +142,51 @@ Este repositório é responsável por:
    - Sincroniza secrets do AWS Secrets Manager para Kubernetes
    - Cada API cria seu próprio SecretStore com IRSA
 
+3. **CloudWatch Application Signals** (namespace `amazon-cloudwatch`)
+   - Observabilidade automática com métricas, traces e logs
+   - Usa ADOT (AWS Distro for OpenTelemetry) para coleta
+   - ServiceAccount: `cloudwatch-agent`
+   - IRSA vinculado à `CloudWatchApplicationSignalsPolicy`
+   - Retenção de logs: **7 dias**
+
+## CloudWatch Application Signals
+
+O cluster possui observabilidade automática via CloudWatch Application Signals, que fornece:
+- **Service Map**: Visualização de dependências entre serviços
+- **Traces Distribuídos**: Rastreamento de requests através dos serviços
+- **Métricas Automáticas**: Latência, erros, throughput
+- **SLO Monitoring**: Monitoramento de objetivos de nível de serviço
+
+### Estratégia de Rollout (Recomendada)
+
+1. **Começar com 1 serviço não-crítico** - Adicione a annotation de instrumentação
+2. **Monitorar por 24-48h** - Verifique uso de memória com `kubectl top nodes`
+3. **Validar telemetria** - Acesse CloudWatch Console → Application Signals
+4. **Expandir gradualmente** - Instrumente os demais serviços
+
+### Verificar Status do Application Signals
+
+```bash
+# Status do add-on
+aws eks describe-addon \
+  --cluster-name fcg \
+  --addon-name amazon-cloudwatch-observability \
+  --region us-east-1
+
+# Pods do CloudWatch
+kubectl get pods -n amazon-cloudwatch
+kubectl get daemonsets -n amazon-cloudwatch
+
+# Verificar uso de memória (importante para t3a.small)
+kubectl top nodes
+```
+
+### Configurar Retenção de Logs (Novos Log Groups)
+
+Quando você instrumenta novas aplicações, novos log groups podem ser criados. 
+
+**Dica:** Re-execute o workflow `Setup EKS Cluster & Add-ons` com `skip_cluster=true` para aplicar retenção automaticamente.
+
 ## Integração com Serviços de API
 
 ### O Que Cada Repositório de API Deve Fazer
@@ -202,7 +248,7 @@ Veja o [repositório FCGUserApi](https://github.com/8NETT-2025-Grupo40/FCGUserAp
 
 ### AWSLoadBalancerControllerIAMPolicy
 
-**ARN**: `arn:aws:iam::478511033947:policy/AWSLoadBalancerControllerIAMPolicy`
+**ARN**: `AWSLoadBalancerControllerIAMPolicy`
 
 **Propósito**: Permitir que o ALB Controller gerencie Application Load Balancers
 
@@ -210,7 +256,7 @@ Veja o [repositório FCGUserApi](https://github.com/8NETT-2025-Grupo40/FCGUserAp
 
 ### FCGExternalSecretsPolicy
 
-**ARN**: `arn:aws:iam::478511033947:policy/FCGExternalSecretsPolicy`
+**ARN**: `FCGExternalSecretsPolicy`
 
 **Propósito**: Permitir leitura de secrets do AWS Secrets Manager
 
@@ -224,6 +270,21 @@ Veja o [repositório FCGUserApi](https://github.com/8NETT-2025-Grupo40/FCGUserAp
 - (Adicionar mais conforme necessário para outras APIs)
 
 **Vinculado a**: ServiceAccount de cada API (criado durante o deployment da API)
+
+### CloudWatchApplicationSignalsPolicy
+
+**ARN**: `CloudWatchApplicationSignalsPolicy`
+
+**Propósito**: Permitir envio de telemetria para CloudWatch e X-Ray
+
+**Permissões**:
+- `logs:PutLogEvents`, `logs:CreateLogGroup`, `logs:PutRetentionPolicy`
+- `xray:PutTraceSegments`, `xray:PutTelemetryRecords`
+- `cloudwatch:PutMetricData`
+- `ec2:Describe*` (para metadata)
+- `eks:DescribeCluster`
+
+**Vinculado a**: ServiceAccount `cloudwatch-agent` no `amazon-cloudwatch`
 
 ## Troubleshooting
 
@@ -295,9 +356,14 @@ kubectl get nodes
 # Verificar pods do sistema
 kubectl get pods -n kube-system
 kubectl get pods -n external-secrets
+kubectl get pods -n amazon-cloudwatch
 
 # Verificar todos os deployments no namespace fcg
 kubectl get deployments -n fcg
+
+# Verificar uso de recursos (importante para t3a.small)
+kubectl top nodes
+kubectl top pods -n fcg
 ```
 
 ### Atualizar Add-ons
@@ -322,19 +388,5 @@ helm upgrade external-secrets external-secrets/external-secrets \
 - [Guia de Setup EKS](eks/README.md)
 - [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/)
 - [External Secrets Operator](https://external-secrets.io/)
+- [CloudWatch Application Signals](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-Application-Monitoring-Sections.html)
 - [Documentação eksctl](https://eksctl.io/)
-
-## Contribuindo
-
-Esta é uma infraestrutura compartilhada. Mudanças devem ser:
-1. Discutidas com o time
-2. Testadas em ambiente não-produtivo primeiro
-3. Deployadas durante janelas de manutenção
-4. Comunicadas para todos os times de API
-
-## Suporte
-
-Para problemas com:
-- **Criação/deleção do cluster**: Verifique as Issues deste repositório
-- **Deployments de APIs**: Verifique o repositório da respectiva API
-- **Recursos AWS**: Entre em contato com o time de DevOps
