@@ -33,7 +33,7 @@ accessConfig:
 # Node Group
 managedNodeGroups:
   - name: low-cost
-    instanceType: t3a.small
+    instanceType: t3a.medium
     desiredCapacity: 10
     minSize: 2
     maxSize: 20
