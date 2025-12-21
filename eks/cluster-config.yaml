@@ -36,7 +36,7 @@ managedNodeGroups:
     instanceType: t3a.small
     desiredCapacity: 3
     minSize: 2
-    maxSize: 8
+    maxSize: 20
     # Usar apenas 2 subnets para nodes
     subnets:
       - subnet-08035017dcc5c41e7
